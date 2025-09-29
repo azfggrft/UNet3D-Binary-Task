@@ -1,0 +1,31 @@
+First, please install all the libraries listed in requirements.txt and make sure that CUDA and other related environments are properly configured.
+
+Please follow the dataset structure below:
+
+dataset/
+    ├── train/
+    │   ├── images/
+    │   └── labels/
+    ├── val/
+    │   ├── images/
+    │   └── labels/
+    └── test/
+        ├── images/
+        └── labels/
+
+
+After installation, simply open train.py to start the process.
+
+By default, training results will be saved in the train_end folder, and prediction results will be saved in the predict folder.
+
+Around line 191 in the code, you can adjust various training parameters according to your needs, such as the optimizer type (Adam, SGD, etc.), data augmentation methods, 
+batch size, and more. Once the settings are configured, you can start the training.
+
+Currently, this program only supports binary images (labels: 0 and 1) and accepts only the following file formats: nii or nii.gz.
+
+For more detailed information on data augmentation, please refer to:
+
+./src/data_processing_and_data_enhancement/How to Choose Data Augmentation.txt
+
+
+This file provides a complete guide and recommendations for usage.
