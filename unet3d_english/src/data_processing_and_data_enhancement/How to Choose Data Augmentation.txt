@@ -1,0 +1,5 @@
+Open augmentation_function.py, the program loads all data augmentation functions via from .augmentation import *.
+
+The program provides default augmentation strategies such as light, medium, heavy, and medical.
+
+If you choose custom, you can freely combine the various augmentation functions defined in augmentation.py to create a personalized data augmentation pipeline according to your needs.
