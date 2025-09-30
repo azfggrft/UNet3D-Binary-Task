@@ -7,6 +7,12 @@ This code is primarily developed for tumor analysis in medical images.
 
 It is available in both Traditional Chinese and English versions, with detailed information included.
 
+1. Added optimizers (Adam, SGD, AdamW).
+2. Added features such as momentum and warmup.
+3. Added visualization functionality.
+4. Early stopping mechanism (step, reduce_on_plateau, cosine).
+5. Added the ability to perform data augmentation directly on the training set.
+
 -------------------------------------------------------------------------------------------------------
 
 這是一個專為醫學影像分割設計的 UNet3D 模型。
@@ -17,11 +23,11 @@ It is available in both Traditional Chinese and English versions, with detailed 
 
 提供繁體中文與英文版本，並包含詳細資訊。
 
-新增優化器（Adam、SGD、AdamW）。
-新增功能：momentum 與 warmup。
-新增視覺化功能。
-早停機制（step、reduce_on_plateau、cosine）。
-新增可直接在訓練集上進行資料增強的功能。
+1. 新增優化器（Adam、SGD、AdamW）。
+2. 新增功能：momentum 與 warmup。
+3. 新增視覺化功能。
+4. 早停機制（step、reduce_on_plateau、cosine）。
+5. 新增可直接在訓練集上進行資料增強的功能。
 
 
 
