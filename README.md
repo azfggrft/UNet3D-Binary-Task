@@ -29,6 +29,24 @@ It is available in both Traditional Chinese and English versions, with detailed 
 4. 早停機制（step、reduce_on_plateau、cosine）。
 5. 新增可直接在訓練集上進行資料增強的功能。
 
+-------------------------------------------------------------------------------------------------------
+
+Prediction Results and GT
+<img width="1012" height="563" alt="image" src="https://github.com/user-attachments/assets/8c2b6f81-1374-4b05-9e3f-67368aeb42b5" />
+
+
+Visualization
+<img width="1314" height="648" alt="image" src="https://github.com/user-attachments/assets/39ec9a77-96fa-4b4c-94e4-297d1e89ed04" />
+
+
+Final Results Display
+<img width="578" height="551" alt="image" src="https://github.com/user-attachments/assets/36a140bb-ee4e-426d-a078-91bc17e50b03" />
+<img width="639" height="694" alt="image" src="https://github.com/user-attachments/assets/8b0ada27-446e-4031-9f7a-2b8620c1b683" />
+
+
+
+
+
 
 
 
