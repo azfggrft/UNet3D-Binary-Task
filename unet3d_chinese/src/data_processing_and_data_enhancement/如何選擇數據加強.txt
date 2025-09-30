@@ -1,0 +1,5 @@
+打開 augmentation_function.py，程式會透過 from .augmentation import * 來載入所有數據增強函式。
+
+程式預設提供 light、medium、heavy 和 medical 等增強策略。
+
+如果選擇 custom，則可以自由組合 augmentation.py 中的各種增強函式，依需求打造專屬的數據增強流程。
