@@ -195,24 +195,24 @@ def get_config():
     """
     config = {
         # === 資料相關參數 ===
-        'data_root': r"D:\unet3d_chinese\dataset",  # 🔧 修改為你的資料根目錄
+        'data_root': r"D:\unet3d\dataset",  # 🔧 修改為你的資料根目錄
         'target_size': (64, 64, 64),     # 🔧 目標影像尺寸 (D, H, W)
         'batch_size': 8,                 # 🔧 批次大小（根據顯卡記憶體調整）
         'num_workers': 4,                # 🔧 資料載入執行緒數
         'use_augmentation': False,        # 🔧 是否啟用數據增強（只對訓練集）
-        'augmentation_type': 'custom',    # 🔧 數據增強類型 ('light', 'medium', 'heavy', 'medical', 'medical_heavy', 'custom')
+        'augmentation_type': 'medium',    # 🔧 數據增強類型 ('light', 'medium', 'heavy', 'medical', 'medical_heavy', 'custom')
         
         # === 模型相關參數 ===
         'n_channels': 1,                 # 🔧 輸入通道數（灰階影像為1，RGB為3）
         'n_classes': 2,                  # 🔧 輸出類別數（二分類為2，多分類根據需求）
-        'base_channels': 64,             # 🔧 基礎通道數（可以是16, 32, 64）
+        'base_channels': 32,             # 🔧 基礎通道數（可以是16, 32, 64）
         'num_groups': 8,                 # 🔧 GroupNorm 組數
         'bilinear': False,               # 🔧 是否使用雙線性上採樣
         
         # === 訓練相關參數 ===
         'num_epochs': 300,               # 🔧 訓練 epoch 數
         'learning_rate': 1e-3,           # 🔧 學習率 (SGD=1E-2, Adam=1E-3)
-        'weight_decay': 5e-4,            # 🔧 權重衰減
+        'weight_decay': 5e-4,            # 🔧 權重衰減 5e-4
         'optimizer': 'adam',             # 🔧 優化器 ('adam', 'adamw', 'sgd')
         
         # === 進階優化器參數 ===
@@ -239,7 +239,7 @@ def get_config():
         'cosine_t_max': None,             # 🔧 Cosine 調度器最大週期（None則使用總epoch數）
         
         # === 保存和日誌 ===
-        'save_dir': r"D:\unet3d_chinese\train_end",     # 🔧 模型保存目錄
+        'save_dir': r"D:\unet3d\train_end",     # 🔧 模型保存目錄
         'log_interval': 1,               # 🔧 日誌輸出間隔
         'save_interval': 200,            # 🔧 模型保存間隔
         'resume_from': None,             # 🔧 從檢查點恢復訓練（路徑或None）
@@ -446,7 +446,7 @@ def create_lr_scheduler(optimizer, config, warmup_scheduler=None):
         from torch.optim.lr_scheduler import ReduceLROnPlateau
         scheduler = ReduceLROnPlateau(
             optimizer,
-            mode='max',
+            mode='min',
             patience=config['scheduler_patience'],
             factor=config['scheduler_factor'],
         )
@@ -620,12 +620,14 @@ def main():
             resume_from=config['resume_from'],
             early_stopping_patience=config['early_stopping_patience']
         )
+
+
         
         # 訓練完成後進行測試
         if config['run_test'] and 'test' in trainer.data_loaders:
             print("\n" + "=" * 70)
             print("開始測試最佳模型...")
-            best_model_path = Path(config['save_dir']) / 'best_model.pth'
+            best_model_path = Path(config['save_dir']) / 'best_val_dice_model.pth'
             if best_model_path.exists():
                 # 執行測試並自動保存結果
                 test_results = trainer.test(str(best_model_path), save_results=True)
@@ -639,6 +641,26 @@ def main():
                 
             else:
                 print("找不到最佳模型檔案")
+
+        # 訓練完成後進行測試(loss)
+        if config['run_test'] and 'test' in trainer.data_loaders:
+            print("\n" + "=" * 70)
+            print("開始測試最佳模型...")
+            best_loss_model_path = Path(config['save_dir']) / 'best_val_loss_model.pth'
+            if best_loss_model_path.exists():
+                # 執行測試並自動保存結果
+                test_loss_results = trainer.test(str(best_loss_model_path), save_results=True)
+                
+                if test_results:
+                    # 在控制台顯示結果
+                    print(f"\n最終測試結果:")
+                    print(f"平均損失: {test_loss_results['avg_loss']:.4f}")
+                    print(f"平均 Dice 分數: {test_loss_results['avg_dice']:.4f}")
+                    print(f"Dice 分數百分比: {test_loss_results['avg_dice'] * 100:.2f}%")
+                
+            else:
+                print("找不到最佳模型檔案")
+        
         
         print("\n" + "🎉" * 20)
         print("✅ 所有任務完成！")
@@ -649,7 +671,7 @@ def main():
         print("\n⏹️  訓練被用戶中斷")
         print("💾 保存中斷狀態...")
         try:
-            trainer.save_checkpoint(len(trainer.history['train_loss']), is_best=False)
+            trainer.save_checkpoint(len(trainer.history['train_loss']), is_dice_best=False, is_val_loss=False)
             print("✅ 狀態已保存，可使用 resume_from 參數恢復訓練")
         except:
             print("❌ 保存狀態失敗")

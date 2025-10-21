@@ -3,6 +3,7 @@
 """
 3D UNet 預測腳本
 載入訓練好的模型權重，對指定資料夾中的 nii.gz or nii 檔案進行預測
+使用與訓練相同的資料處理邏輯（nnUNet 風格 resampling）
 """
 
 import torch
@@ -27,16 +28,25 @@ from src.network_architecture.net_module import *
 from src.network_architecture.unet3d import UNet3D
 from trainer import EnhancedUNet3DTrainer
 
+# 🔥 導入統一的資料處理函式
+from src.data_processing_and_data_enhancement.dataload import (
+    resample_data_or_seg,
+    determine_do_sep_z_and_axis,
+    compute_new_shape,
+    ANISO_THRESHOLD
+)
+
 class UNet3DPredictor:
-    """3D UNet 預測器類別"""
+    """3D UNet 預測器類別（使用 nnUNet 風格的資料處理）"""
     
-    def __init__(self, model_path: str, device: str = 'auto'):
+    def __init__(self, model_path: str, device: str = 'auto', spacing: Optional[List[float]] = None):
         """
         初始化預測器
         
         Args:
             model_path: 模型權重檔案路徑 (.pth)
             device: 計算設備 ('auto', 'cpu', 'cuda')
+            spacing: 原始資料的 spacing (z, y, x)，例如 [3.0, 1.0, 1.0]
         """
         self.model_path = Path(model_path)
         if not self.model_path.exists():
@@ -52,6 +62,10 @@ class UNet3DPredictor:
         if self.device.type == 'cuda':
             print(f"GPU 名稱: {torch.cuda.get_device_name(self.device)}")
             print(f"GPU 記憶體: {torch.cuda.get_device_properties(self.device).total_memory / 1024**3:.1f} GB")
+        
+        # 設置 spacing（用於 nnUNet 風格 resampling）
+        self.spacing = spacing if spacing is not None else [1.0, 1.0, 1.0]
+        print(f"📏 使用 spacing: {self.spacing} (z, y, x)")
         
         # 載入模型
         self.model = None
@@ -81,13 +95,11 @@ class UNet3DPredictor:
     
     def _clean_state_dict(self, state_dict):
         """清理狀態字典，移除 thop 添加的額外鍵值"""
-        # 需要移除的鍵值模式
         keys_to_remove = []
         for key in state_dict.keys():
             if 'total_ops' in key or 'total_params' in key:
                 keys_to_remove.append(key)
         
-        # 移除這些鍵值
         for key in keys_to_remove:
             del state_dict[key]
             
@@ -144,48 +156,53 @@ class UNet3DPredictor:
             print(f"載入模型時發生錯誤: {e}")
             raise
     
-    def load_nii_image(self, file_path: Path) -> np.ndarray:
-        """載入 NII.GZ 檔案"""
+    def load_nii_image(self, file_path: Path) -> Tuple[np.ndarray, List[float]]:
+        """
+        載入 NII.GZ 檔案
+        
+        Returns:
+            tuple: (影像資料, spacing)
+        """
         try:
             nii_img = nib.load(str(file_path))
             img_data = nii_img.get_fdata()
             img_data = np.array(img_data, dtype=np.float32)
             
+            # 提取 spacing 資訊
+            file_spacing = nii_img.header.get_zooms()[:3]
+            # 轉換為 (z, y, x) 順序
+            spacing = [float(file_spacing[2]), float(file_spacing[1]), float(file_spacing[0])]
+            
             # 處理不同維度的影像
             if img_data.ndim == 4:
-                # 🔧 若是4D影像 (X, Y, Z, T)，只取第0個時間點
                 print(f"⚠️ 偵測到4D影像 {img_data.shape}，自動取最後一維的 index=0")
                 img_data = img_data[..., 0]
             elif img_data.ndim == 3:
-                # ✅ 3D影像，維持原樣
                 print(f"✅ 偵測到3D影像 {img_data.shape}")
             elif img_data.ndim == 2:
-                # 🔧 若是2D影像，添加深度維度 (H, W) -> (1, H, W)
                 print(f"⚠️ 偵測到2D影像 {img_data.shape}，添加深度維度")
                 img_data = img_data[np.newaxis, ...]
             elif img_data.ndim > 4:
-                # 🚨 超過4D的影像，取前3個維度
                 print(f"⚠️ 偵測到{img_data.ndim}D影像 {img_data.shape}，只取前3個維度")
-                img_data = img_data[..., 0, 0] if img_data.ndim == 5 else img_data
-                # 如果還是超過3D，繼續降維直到3D
                 while img_data.ndim > 3:
                     img_data = img_data[..., 0]
             else:
                 raise ValueError(f"不支援的影像維度: {img_data.ndim}D")
             
-            # 確保最終結果是3D
             if img_data.ndim != 3:
                 raise ValueError(f"處理後的影像維度不正確: {img_data.ndim}D，期望3D")
                 
             print(f"📊 最終影像形狀: {img_data.shape}")
-            return img_data
+            print(f"📏 檔案 spacing: {spacing} (z, y, x)")
+            
+            return img_data, spacing
             
         except Exception as e:
             print(f"讀取檔案 {file_path} 時發生錯誤: {e}")
             raise
     
     def normalize_image(self, image: np.ndarray) -> np.ndarray:
-        """影像標準化"""
+        """影像標準化（與訓練時相同）"""
         # 移除異常值
         p1, p99 = np.percentile(image, (1, 99))
         image = np.clip(image, p1, p99)
@@ -198,24 +215,72 @@ class UNet3DPredictor:
         
         return image
     
-    def resize_volume(self, volume: np.ndarray, target_size: Tuple[int, int, int]) -> np.ndarray:
-        """調整 3D 體積大小"""
+    def resize_volume(self, volume: np.ndarray, target_size: Tuple[int, int, int], 
+                      current_spacing: List[float], is_seg: bool = False) -> np.ndarray:
+        """
+        🔥 使用 nnUNet 風格的 resampling
+        
+        Args:
+            volume: 輸入體積 (D, H, W)
+            target_size: 目標尺寸 (D, H, W)
+            current_spacing: 當前 spacing (z, y, x)
+            is_seg: 是否為分割標籤
+        """
         if target_size is None:
             return volume
-            
-        from scipy.ndimage import zoom
+        
+        if volume.ndim != 3:
+            raise ValueError(f"resize_volume 只支援3D體積，收到 {volume.ndim}D")
         
         current_size = volume.shape
-        zoom_factors = [t/c for t, c in zip(target_size, current_size)]
-        resized = zoom(volume, zoom_factors, order=1)  # 線性插值
+        
+        if len(target_size) != 3:
+            raise ValueError(f"target_size 必須是3D (D, H, W)")
+        
+        # 計算新的 spacing
+        current_spacing = np.array(current_spacing)
+        new_spacing = current_spacing * (np.array(current_size) / np.array(target_size))
+        
+        # 決定是否需要分離 z 軸（使用與訓練相同的邏輯）
+        do_separate_z, axis = determine_do_sep_z_and_axis(
+            force_separate_z=None,  # 自動判斷
+            current_spacing=current_spacing,
+            new_spacing=new_spacing,
+            separate_z_anisotropy_threshold=ANISO_THRESHOLD
+        )
+        
+        if do_separate_z:
+            print(f"🔄 偵測到各向異性，分離處理軸 {axis}")
+        
+        # 使用 nnUNet 風格的 resampling
+        order = 0 if is_seg else 3  # 標籤用最近鄰，影像用三次插值
+        order_z = 0
+        
+        resized = resample_data_or_seg(
+            volume,
+            target_size,
+            is_seg=is_seg,
+            axis=axis,
+            order=order,
+            do_separate_z=do_separate_z,
+            order_z=order_z
+        )
         
         return resized
     
-    def preprocess_image(self, image: np.ndarray, target_size: Optional[Tuple[int, int, int]] = None) -> torch.Tensor:
-        """預處理單張影像"""
-        # 調整大小
+    def preprocess_image(self, image: np.ndarray, current_spacing: List[float],
+                         target_size: Optional[Tuple[int, int, int]] = None) -> torch.Tensor:
+        """
+        預處理單張影像（使用 nnUNet 風格 resampling）
+        
+        Args:
+            image: 原始影像 (D, H, W)
+            current_spacing: 當前 spacing (z, y, x)
+            target_size: 目標尺寸 (D, H, W)
+        """
+        # 調整大小（使用 nnUNet 風格）
         if target_size is not None:
-            image = self.resize_volume(image, target_size)
+            image = self.resize_volume(image, target_size, current_spacing, is_seg=False)
         
         # 標準化
         image = self.normalize_image(image)
@@ -228,8 +293,11 @@ class UNet3DPredictor:
         
         return image
     
-    def postprocess_prediction(self, prediction: torch.Tensor, original_size: Tuple[int, int, int]) -> np.ndarray:
-        """後處理預測結果"""
+    def postprocess_prediction(self, prediction: torch.Tensor, original_size: Tuple[int, int, int],
+                               current_spacing: List[float]) -> np.ndarray:
+        """
+        後處理預測結果（使用 nnUNet 風格 resampling）
+        """
         # 移除批次維度和通道維度
         if len(prediction.shape) == 5:  # [1, C, D, H, W]
             prediction = prediction.squeeze(0)
@@ -245,23 +313,35 @@ class UNet3DPredictor:
         # 轉為 numpy
         prediction = prediction.cpu().numpy().astype(np.uint8)
         
-        # 調整回原始大小
+        # 調整回原始大小（使用 nnUNet 風格）
         if prediction.shape != original_size:
-            from scipy.ndimage import zoom
-            zoom_factors = [o/p for o, p in zip(original_size, prediction.shape)]
-            prediction = zoom(prediction, zoom_factors, order=0)  # 最近鄰插值
+            # 計算 spacing
+            pred_spacing = current_spacing * (np.array(original_size) / np.array(prediction.shape))
+            
+            prediction = self.resize_volume(
+                prediction, 
+                original_size, 
+                pred_spacing,
+                is_seg=True  # 標籤用最近鄰插值
+            )
             prediction = prediction.astype(np.uint8)
         
         return prediction
     
-    def predict_single_image(self, image_path: Path, target_size: Optional[Tuple[int, int, int]] = None) -> Tuple[np.ndarray, Dict]:
-        """預測單張影像"""
-        # 載入原始影像
-        original_image = self.load_nii_image(image_path)
+    def predict_single_image(self, image_path: Path, 
+                            target_size: Optional[Tuple[int, int, int]] = None) -> Tuple[np.ndarray, Dict]:
+        """
+        預測單張影像（使用 nnUNet 風格處理）
+        """
+        # 載入原始影像和 spacing
+        original_image, file_spacing = self.load_nii_image(image_path)
         original_size = original_image.shape
         
-        # 預處理
-        input_tensor = self.preprocess_image(original_image, target_size)
+        # 使用檔案的 spacing（如果有的話）或預設 spacing
+        current_spacing = file_spacing if file_spacing else self.spacing
+        
+        # 預處理（使用 nnUNet 風格）
+        input_tensor = self.preprocess_image(original_image, current_spacing, target_size)
         
         # 預測
         with torch.no_grad():
@@ -269,13 +349,14 @@ class UNet3DPredictor:
             prediction = self.model(input_tensor)
             inference_time = time.time() - start_time
         
-        # 後處理
-        prediction_mask = self.postprocess_prediction(prediction, original_size)
+        # 後處理（使用 nnUNet 風格）
+        prediction_mask = self.postprocess_prediction(prediction, original_size, current_spacing)
         
         # 計算統計資訊
         stats = {
             'original_size': original_size,
             'input_size': input_tensor.shape[2:],  # 去掉批次和通道維度
+            'spacing': current_spacing,
             'inference_time': inference_time,
             'foreground_pixels': int(np.sum(prediction_mask > 0)),
             'total_pixels': int(prediction_mask.size),
@@ -316,16 +397,6 @@ class UNet3DPredictor:
                       save_stats: bool = True) -> Dict:
         """
         預測整個資料夾中的所有 NII.GZ 檔案
-        
-        Args:
-            input_folder: 輸入資料夾路徑
-            output_folder: 輸出資料夾路徑
-            target_size: 目標尺寸 (D, H, W)，None 表示保持原始大小
-            file_pattern: 檔案模式
-            save_stats: 是否保存統計資訊
-        
-        Returns:
-            dict: 預測統計資訊
         """
         input_path = Path(input_folder)
         output_path = Path(output_folder)
@@ -346,6 +417,7 @@ class UNet3DPredictor:
         print(f"輸出資料夾: {output_path}")
         if target_size:
             print(f"目標尺寸: {target_size}")
+        print(f"使用 nnUNet 風格 resampling")
         
         # 預測統計
         all_stats = {}
@@ -388,7 +460,8 @@ class UNet3DPredictor:
             'total_inference_time': total_time,
             'average_inference_time': total_time / successful_predictions if successful_predictions > 0 else 0,
             'model_config': self.model_config,
-            'target_size': target_size
+            'target_size': target_size,
+            'resampling_method': 'nnUNet_style'
         }
         
         print(f"\n預測完成!")
@@ -411,10 +484,11 @@ class UNet3DPredictor:
         
         return summary_stats
 
+
 def main():
     """主函數"""
     parser = argparse.ArgumentParser(
-        description='3D UNet 預測腳本',
+        description='3D UNet 預測腳本（使用 nnUNet 風格 resampling）',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
     
@@ -424,6 +498,8 @@ def main():
     
     parser.add_argument('--target_size', type=int, nargs=3, metavar=('D', 'H', 'W'),
                        help='目標尺寸 (深度 高度 寬度)，例如: --target_size 64 64 64')
+    parser.add_argument('--spacing', type=float, nargs=3, metavar=('Z', 'Y', 'X'),
+                       help='原始 spacing (z, y, x)，例如: --spacing 3.0 1.0 1.0')
     parser.add_argument('--device', type=str, default='auto', 
                        choices=['auto', 'cpu', 'cuda'], help='計算設備')
     parser.add_argument('--pattern', type=str, default='*.nii.gz',
@@ -433,12 +509,15 @@ def main():
     
     args = parser.parse_args()
     
-    print("🧠 3D UNet 預測系統")
+    print("🧠 3D UNet 預測系統（nnUNet 風格 resampling）")
     print("=" * 50)
     
     try:
+        # 轉換 spacing
+        spacing = args.spacing if args.spacing else None
+        
         # 創建預測器
-        predictor = UNet3DPredictor(args.model_path, args.device)
+        predictor = UNet3DPredictor(args.model_path, args.device, spacing=spacing)
         
         # 轉換目標尺寸
         target_size = tuple(args.target_size) if args.target_size else None
@@ -461,19 +540,21 @@ def main():
         import traceback
         traceback.print_exc()
 
+
 def predict_single_example():
     """單檔案預測範例"""
-    print("單檔案預測範例:")
+    print("單檔案預測範例（nnUNet 風格）:")
     
     # 參數設定
     model_path = r"model.pth"
     image_path = r"image.nii.gz"
     output_path = r"predictions\pred_image.nii.gz"
-    target_size = (64, 64, 64)  # 或 None 保持原始大小
+    target_size = (64, 64, 64)
+    spacing = [3.0, 1.0, 1.0]  # 各向異性 spacing (z, y, x)
     
     try:
         # 創建預測器
-        predictor = UNet3DPredictor(model_path, device='auto')
+        predictor = UNet3DPredictor(model_path, device='auto', spacing=spacing)
         
         # 預測單張影像
         prediction, stats = predictor.predict_single_image(
@@ -490,6 +571,7 @@ def predict_single_example():
         
     except Exception as e:
         print(f"預測失敗: {e}")
+
 
 if __name__ == "__main__":
     main()

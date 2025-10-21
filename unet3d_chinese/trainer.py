@@ -75,7 +75,8 @@ class EnhancedUNet3DTrainer:
         }
         
         # 最佳模型追蹤
-        self.best_val_dice = 0.0
+        self.best_val_dice = float('-inf')
+        self.best_val_loss = float('inf')
         self.best_epoch = 0
         
         self.start_time = None
@@ -446,7 +447,7 @@ class EnhancedUNet3DTrainer:
                 print(f"視覺化過程出現錯誤: {e}")
             # 不中斷訓練，繼續執行
     
-    def save_checkpoint(self, epoch, is_best=False):
+    def save_checkpoint(self, epoch, is_dice_best=False, is_loss_best=False):
         """保存檢查點 - 使用實際的訓練配置而非模型預設值"""
         # 從訓練配置中提取模型配置（優先使用實際配置）
         if self.training_config:
@@ -476,7 +477,10 @@ class EnhancedUNet3DTrainer:
             'train_dice': self.history['train_dice'],
             'val_dice': self.history['val_dice'],
             'learning_rate': self.history['learning_rate'],
+            'epoch_time': self.history['epoch_time'],  # 新增
+            'gpu_memory': self.history['gpu_memory'],  # 新增：GPU記憶體歷史
             'best_val_dice': self.best_val_dice,
+            'best_val_loss': self.best_val_loss,
             'total_training_time': self.total_training_time,
             
             # 使用實際的訓練配置
@@ -496,10 +500,16 @@ class EnhancedUNet3DTrainer:
         latest_path = self.save_dir / 'latest_checkpoint.pth'
         torch.save(checkpoint, latest_path)
         
-        if is_best:
-            best_path = self.save_dir / 'best_model.pth'
+        
+        if is_dice_best:
+            best_path = self.save_dir / 'best_val_dice_model.pth'
             torch.save(checkpoint, best_path)
-            print(f"最佳模型已保存: {best_path}")
+            print(f"最佳模型已保存(DICE): {best_path}")
+        
+        if is_loss_best:
+            best_loss_path = self.save_dir / 'best_val_loss_model.pth'
+            torch.save(checkpoint, best_loss_path)
+            print(f"最佳模型已保存(LOSS): {best_loss_path}")
             
         # 定期顯示保存資訊
         if (epoch + 1) % (self.save_interval * 2) == 0:
@@ -516,7 +526,15 @@ class EnhancedUNet3DTrainer:
         self.model.load_state_dict(checkpoint['model_state_dict'])
         self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         self.best_val_dice = checkpoint.get('best_val_dice', 0.0)
-        self.history = checkpoint.get('history', self.history)
+
+         # 恢復完整歷史記錄
+        self.history['train_loss'] = checkpoint.get('train_losses', [])
+        self.history['val_loss'] = checkpoint.get('val_losses', [])
+        self.history['train_dice'] = checkpoint.get('train_dice', [])
+        self.history['val_dice'] = checkpoint.get('val_dice', [])
+        self.history['learning_rate'] = checkpoint.get('learning_rate', [])
+        self.history['epoch_time'] = checkpoint.get('epoch_time', [])  # 新增
+        self.history['gpu_memory'] = checkpoint.get('gpu_memory', [])  # 新增：恢復GPU記憶體歷史
         
         if self.scheduler and 'scheduler_state_dict' in checkpoint:
             self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
@@ -524,6 +542,10 @@ class EnhancedUNet3DTrainer:
         start_epoch = checkpoint['epoch'] + 1
         print(f"載入檢查點，從第 {start_epoch} epoch 開始")
         print(f"歷史最佳Dice: {self.best_val_dice:.4f}")
+        # 顯示 GPU 記憶體資訊
+        if self.history['gpu_memory']:
+            latest_gpu = self.history['gpu_memory'][-1]
+            print(f"上次訓練 GPU 記憶體: 已分配 {latest_gpu['allocated']:.2f} GB, 已緩存 {latest_gpu['cached']:.2f} GB")
         return start_epoch
     
     def get_sample_predictions(self):
@@ -642,20 +664,31 @@ class EnhancedUNet3DTrainer:
                 if not warmup_stage and self.scheduler:
                     # 只有在非 warmup 階段才調用主調度器
                     if isinstance(self.scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
-                        self.scheduler.step(val_dice)
+                        #self.scheduler.step(val_dice)
+                        self.scheduler.step(val_loss) #改為以val_loss當標準(早停)，配合ReduceLROnPlateau的mode='min'(train.py)
                     else:
                         self.scheduler.step()
                 
-                # 檢查是否是最佳模型
-                is_best = val_dice > self.best_val_dice
-                if is_best:
+                # 檢查是否是最佳模型（修復：分別獨立判斷）
+                is_dice_best = val_dice > self.best_val_dice
+                is_loss_best = val_loss < self.best_val_loss
+                
+                # 更新最佳 Dice
+                if is_dice_best:
                     self.best_val_dice = val_dice
                     early_stopping_counter = 0
-                else:
+                
+                # 更新最佳 Loss（獨立判斷，不使用 elif）
+                if is_loss_best:
+                    self.best_val_loss = val_loss
+                    early_stopping_counter = 0
+                
+                # 如果兩者都沒改進，才增加計數器
+                if not is_dice_best and not is_loss_best:
                     early_stopping_counter += 1
                 
                 # 日誌輸出 - 增強版：顯示當前階段和動量資訊
-                if (epoch + 1) % self.log_interval == 0 or is_best:
+                if (epoch + 1) % self.log_interval == 0 or is_dice_best or is_loss_best:
                     current_lr = self.optimizer.param_groups[0]['lr']
                     
                     # 獲取動量資訊
@@ -675,24 +708,30 @@ class EnhancedUNet3DTrainer:
                             f"Val Loss: {val_loss:.4f}, Val Dice: {val_dice:.4f} | "
                             f"LR: {current_lr:.6f}{momentum_info} | Time: {epoch_time:.1f}s")
                     
-                    if is_best:
-                        log_msg += " ⭐ [NEW BEST]"
-                    
+                    if is_dice_best:
+                        log_msg += " ⭐ [NEW BEST DICE]"
+                        
+                    if is_loss_best:
+                        log_msg += " 🌸 [NEW BEST LOSS]"
+
                     if self.use_progress_bar:
                         tqdm.write(log_msg)
                     else:
                         print(log_msg)
-                
+
                 # 保存檢查點
-                if (epoch + 1) % self.save_interval == 0 or is_best:
-                    self.save_checkpoint(epoch, is_best)
+                if (epoch + 1) % self.save_interval == 0 or is_dice_best:
+                    self.save_checkpoint(epoch, is_dice_best=is_dice_best)
+
+                # 保存檢查點
+                if (epoch + 1) % self.save_interval == 0 or is_loss_best:
+                    self.save_checkpoint(epoch, is_loss_best=is_loss_best)
                 
                 # 視覺化 - 包含預測結果
                 if self.visualize and (epoch + 1) % self.plot_interval == 0:
                     try:
                         # 繪製訓練曲線
                         self.visualizer.plot_training_curves(self.history, title=f"Training curve (up to Epoch {epoch+1})" , save_name=f"training_curves_epoch_{epoch+1:03d}.png")
-                        
                         # 獲取並視覺化預測結果
                         sample_predictions = self.get_sample_predictions()
                         if sample_predictions is not None:
@@ -1007,6 +1046,33 @@ class EnhancedUNet3DTrainer:
                 'num_groups': self.training_config.get('num_groups', 8),
                 'bilinear': self.training_config.get('bilinear', False)
             }
+        # 新增：從檢查點或當前歷史獲取 GPU 記憶體資訊
+        gpu_memory_stats = {}
+        if model_path and Path(model_path).exists():
+            try:
+                checkpoint = self.safe_torch_load(model_path)
+                gpu_memory_history = checkpoint.get('gpu_memory', self.history.get('gpu_memory', []))
+            except:
+                gpu_memory_history = self.history.get('gpu_memory', [])
+        else:
+            gpu_memory_history = self.history.get('gpu_memory', [])
+        
+        # 計算 GPU 記憶體統計
+        if gpu_memory_history and len(gpu_memory_history) > 0:
+            allocated_list = [m['allocated'] for m in gpu_memory_history if 'allocated' in m]
+            cached_list = [m['cached'] for m in gpu_memory_history if 'cached' in m]
+            
+            if allocated_list:
+                gpu_memory_stats = {
+                    'avg_allocated': np.mean(allocated_list),
+                    'max_allocated': np.max(allocated_list),
+                    'min_allocated': np.min(allocated_list),
+                    'avg_cached': np.mean(cached_list),
+                    'max_cached': np.max(cached_list),
+                    'min_cached': np.min(cached_list),
+                    'final_allocated': allocated_list[-1],
+                    'final_cached': cached_list[-1]
+                }
         
         # 保存到txt文件
         txt_file = self.save_dir / f"test_results_{timestamp}.txt"
@@ -1026,7 +1092,7 @@ class EnhancedUNet3DTrainer:
             f.write(f"GroupNorm 組數 (num_groups): {model_config.get('num_groups', 'Unknown')}\n")
             f.write(f"雙線性上採樣 (bilinear): {model_config.get('bilinear', 'Unknown')}\n")
             f.write("\n")
-            
+               
             # 如果有完整的訓練配置，額外顯示關鍵訓練參數
             if full_training_config:
                 f.write("=" * 24 + " 訓練配置參數 " + "=" * 24 + "\n")
@@ -1048,6 +1114,19 @@ class EnhancedUNet3DTrainer:
             f.write(f"GLOPs: {model_complexity.get('flops', 'Unknown')}\n")
             f.write(f"平均推理時間: {model_complexity.get('avg_inference_time', 0)*1000:.2f} ms\n")
             f.write("\n")
+            
+            # 新增：GPU 記憶體使用統計區塊（在模型複雜度資訊之後）
+            if gpu_memory_stats:
+                f.write("=" * 24 + " GPU 記憶體使用統計 " + "=" * 23 + "\n")
+                f.write(f"平均已分配記憶體: {gpu_memory_stats['avg_allocated']:.2f} GB\n")
+                f.write(f"峰值已分配記憶體: {gpu_memory_stats['max_allocated']:.2f} GB\n")
+                f.write(f"最小已分配記憶體: {gpu_memory_stats['min_allocated']:.2f} GB\n")
+                f.write(f"平均已緩存記憶體: {gpu_memory_stats['avg_cached']:.2f} GB\n")
+                f.write(f"峰值已緩存記憶體: {gpu_memory_stats['max_cached']:.2f} GB\n")
+                f.write(f"最小已緩存記憶體: {gpu_memory_stats['min_cached']:.2f} GB\n")
+                f.write(f"最終已分配記憶體: {gpu_memory_stats['final_allocated']:.2f} GB\n")
+                f.write(f"最終已緩存記憶體: {gpu_memory_stats['final_cached']:.2f} GB\n")
+                f.write("\n")
             
             # 訓練資訊
             f.write("=" * 26 + " 訓練資訊 " + "=" * 26 + "\n")
@@ -1125,6 +1204,8 @@ class EnhancedUNet3DTrainer:
             'training_config': full_training_config,  # 新增：完整訓練配置
             'model_complexity': model_complexity,
             'training_info': training_info,
+            'gpu_memory_stats': gpu_memory_stats,  # 新增：GPU記憶體統計
+            'gpu_memory_history': gpu_memory_history,  # 新增：完整GPU記憶體歷史
             'test_summary': {
                 'avg_loss': float(avg_loss),
                 'avg_dice': float(avg_dice),
