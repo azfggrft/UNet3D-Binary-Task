@@ -1,4 +1,0 @@
-'''
-Store neural network architectures
-'''
-
