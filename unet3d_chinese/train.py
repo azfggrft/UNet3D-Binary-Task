@@ -195,12 +195,16 @@ def get_config():
     """
     config = {
         # === 資料相關參數 ===
-        'data_root': r"D:\unet3d\dataset",  # 🔧 修改為你的資料根目錄
+        'data_root': r"D:\UNet\dataset_胰臟",  # 🔧 修改為你的資料根目錄
         'target_size': (64, 64, 64),     # 🔧 目標影像尺寸 (D, H, W)
-        'batch_size': 8,                 # 🔧 批次大小（根據顯卡記憶體調整）
+        'batch_size': 4,                 # 🔧 批次大小（根據顯卡記憶體調整）
         'num_workers': 4,                # 🔧 資料載入執行緒數
         'use_augmentation': False,        # 🔧 是否啟用數據增強（只對訓練集）
         'augmentation_type': 'medium',    # 🔧 數據增強類型 ('light', 'medium', 'heavy', 'medical', 'medical_heavy', 'custom')
+
+        # 🔑 新增：智慧裁剪參數
+        'use_adaptive_crop': True,        # 🔧 啟用智慧裁剪
+        'crop_margin_ratio': 0.15,        # 🔧 邊界擴展比例 (0.1-0.2)
         
         # === 模型相關參數 ===
         'n_channels': 1,                 # 🔧 輸入通道數（灰階影像為1，RGB為3）
@@ -239,7 +243,7 @@ def get_config():
         'cosine_t_max': None,             # 🔧 Cosine 調度器最大週期（None則使用總epoch數）
         
         # === 保存和日誌 ===
-        'save_dir': r"D:\unet3d\train_end",     # 🔧 模型保存目錄
+        'save_dir': r"D:\UNet\unet3d_test\train_end",     # 🔧 模型保存目錄
         'log_interval': 1,               # 🔧 日誌輸出間隔
         'save_interval': 200,            # 🔧 模型保存間隔
         'resume_from': None,             # 🔧 從檢查點恢復訓練（路徑或None）
@@ -519,7 +523,9 @@ def create_trainer_from_config(config):
         target_size=config['target_size'],
         num_workers=config['num_workers'],
         use_augmentation=config['use_augmentation'],
-        augmentation_type=config['augmentation_type']
+        augmentation_type=config['augmentation_type'],
+        use_adaptive_crop=config.get('use_adaptive_crop', False),      
+        crop_margin_ratio=config.get('crop_margin_ratio', 0.15)        
     )
     
     # 設置優化器（支援參數分組）
