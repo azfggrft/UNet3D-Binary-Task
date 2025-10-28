@@ -207,7 +207,8 @@ class MedicalImageDataset(Dataset):
     def __init__(self, data_root, split='train', image_suffix=['.nii.gz', '.nii'], 
                  mask_suffix=['.nii.gz', '.nii'], transform=None, target_size=None, 
                  num_classes=None, debug_labels=True, use_augmentation=True,
-                 augmentation_type='medical', spacing=None, force_separate_z=None):
+                 augmentation_type='medical', spacing=None, force_separate_z=None,
+                 use_adaptive_crop=False, crop_margin_ratio=0.15):
         """
         Args:
             data_root: 資料根目錄
@@ -222,6 +223,8 @@ class MedicalImageDataset(Dataset):
             augmentation_type: 數據增強類型
             spacing: 原始資料的 spacing (z, y, x)，用於判斷各向異性
             force_separate_z: 強制是否分離 z 軸處理
+            use_adaptive_crop: 是否使用自適應裁剪（針對小標籤優化）
+            crop_margin_ratio: 裁剪邊界擴展比例
         """
         self.data_root = Path(data_root)
         self.split = split
@@ -231,6 +234,11 @@ class MedicalImageDataset(Dataset):
         self.debug_labels = debug_labels
         self.spacing = spacing if spacing is not None else [1.0, 1.0, 1.0]  # 預設等向性
         self.force_separate_z = force_separate_z
+        self.use_adaptive_crop = use_adaptive_crop
+        self.crop_margin_ratio = crop_margin_ratio
+
+        if self.use_adaptive_crop:
+            print(f"✅ 啟用智慧裁剪模式 (margin: {crop_margin_ratio*100:.0f}%)")
         
         # 數據增強設定
         self.use_augmentation = use_augmentation and (split == 'train')
@@ -361,7 +369,97 @@ class MedicalImageDataset(Dataset):
             image = (image - mean) / std
         
         return image
-    
+    def get_bbox_from_mask(self, mask, margin_ratio=0.1):
+        """
+        從 mask 中提取包含前景的最小邊界框
+        
+        Args:
+            mask: 標籤陣列
+            margin_ratio: 邊界擴展比例（相對於 bbox 大小）
+        
+        Returns:
+            bbox: (z_min, z_max, y_min, y_max, x_min, x_max)
+        """
+        # 找到前景像素的位置
+        pos = np.where(mask > 0)
+        
+        if len(pos[0]) == 0:
+            # 如果沒有前景，返回整個影像
+            return (0, mask.shape[0], 0, mask.shape[1], 0, mask.shape[2])
+        
+        # 計算最小邊界框
+        z_min, z_max = pos[0].min(), pos[0].max()
+        y_min, y_max = pos[1].min(), pos[1].max()
+        x_min, x_max = pos[2].min(), pos[2].max()
+        
+        # 添加 margin
+        z_size = z_max - z_min + 1
+        y_size = y_max - y_min + 1
+        x_size = x_max - x_min + 1
+        
+        z_margin = int(z_size * margin_ratio)
+        y_margin = int(y_size * margin_ratio)
+        x_margin = int(x_size * margin_ratio)
+        
+        # 擴展邊界並確保不超出影像範圍
+        z_min = max(0, z_min - z_margin)
+        z_max = min(mask.shape[0], z_max + z_margin + 1)
+        y_min = max(0, y_min - y_margin)
+        y_max = min(mask.shape[1], y_max + y_margin + 1)
+        x_min = max(0, x_min - x_margin)
+        x_max = min(mask.shape[2], x_max + x_margin + 1)
+        
+        return (z_min, z_max, y_min, y_max, x_min, x_max)
+
+    def crop_to_bbox(self, image, mask, bbox):
+        """
+        根據邊界框裁剪影像和標籤
+        
+        Args:
+            image: 影像陣列
+            mask: 標籤陣列
+            bbox: (z_min, z_max, y_min, y_max, x_min, x_max)
+        
+        Returns:
+            cropped_image, cropped_mask
+        """
+        z_min, z_max, y_min, y_max, x_min, x_max = bbox
+        
+        cropped_image = image[z_min:z_max, y_min:y_max, x_min:x_max]
+        cropped_mask = mask[z_min:z_max, y_min:y_max, x_min:x_max]
+        
+        return cropped_image, cropped_mask
+
+    def adaptive_crop_and_resize(self, image, mask, target_size):
+        """
+        自適應裁剪和縮放：先裁剪到 ROI，再 resize
+        
+        Args:
+            image: 原始影像
+            mask: 原始標籤
+            target_size: 目標尺寸 (D, H, W)
+        
+        Returns:
+            resized_image, resized_mask
+        """
+        # 1. 計算包含標籤的邊界框
+        bbox = self.get_bbox_from_mask(mask, margin_ratio=0.15)
+        
+        # 2. 裁剪到 ROI
+        cropped_image, cropped_mask = self.crop_to_bbox(image, mask, bbox)
+        
+        # 3. Resize 到目標尺寸
+        resized_image = self.resize_volume(cropped_image, target_size, is_seg=False)
+        resized_mask = self.resize_volume(cropped_mask, target_size, is_seg=True)
+        
+        if self.debug_labels:
+            original_fg = np.sum(mask > 0)
+            cropped_fg = np.sum(cropped_mask > 0)
+            resized_fg = np.sum(resized_mask > 0)
+            #print(f"📊 前景像素變化: 原始 {original_fg} → 裁剪 {cropped_fg} → Resize {resized_fg}")
+            #print(f"📏 尺寸變化: {image.shape} → {cropped_image.shape} → {target_size}")
+        
+        return resized_image, resized_mask
     def resize_volume(self, volume, target_size, is_seg=False):
         """
         使用 nnUNet 風格的 resampling
@@ -449,10 +547,15 @@ class MedicalImageDataset(Dataset):
             # 處理維度不匹配
             image, mask = self.handle_dimension_mismatch(image, mask, img_path.name)
             
-            # 使用 nnUNet 風格的 resampling
+            # 🔑 關鍵修改：使用自適應裁剪和縮放
             if self.target_size is not None:
-                image = self.resize_volume(image, self.target_size, is_seg=False)
-                mask = self.resize_volume(mask, self.target_size, is_seg=True)
+                if hasattr(self, 'use_adaptive_crop') and self.use_adaptive_crop:
+                    # 使用智慧裁剪
+                    image, mask = self.adaptive_crop_and_resize(image, mask, self.target_size)
+                else:
+                    # 原始方法
+                    image = self.resize_volume(image, self.target_size, is_seg=False)
+                    mask = self.resize_volume(mask, self.target_size, is_seg=True)
             
             # 標準化影像
             image = self.normalize_image(image)
@@ -494,13 +597,16 @@ class MedicalImageDataset(Dataset):
 # ==================== 資料載入工具函數 ====================
 def create_data_loaders(data_root, batch_size=2, target_size=(64, 64, 64), 
                        num_workers=2, use_augmentation=True, augmentation_type='medical',
-                       spacing=None, force_separate_z=None):
+                       spacing=None, force_separate_z=None,
+                       use_adaptive_crop=False, crop_margin_ratio=0.15):
     """
     創建資料載入器（使用 nnUNet 風格的 resampling）
     
     Args:
         spacing: 原始資料的 spacing (z, y, x)，例如 [3.0, 1.0, 1.0] 表示 z 軸解析度較低
         force_separate_z: 強制是否分離 z 軸處理（None 則自動判斷）
+        use_adaptive_crop: 是否使用自適應裁剪
+        crop_margin_ratio: 裁剪邊界擴展比例
     """
     data_loaders = {}
     
@@ -518,7 +624,9 @@ def create_data_loaders(data_root, batch_size=2, target_size=(64, 64, 64),
                 use_augmentation=use_augmentation,
                 augmentation_type=augmentation_type,
                 spacing=spacing,
-                force_separate_z=force_separate_z
+                force_separate_z=force_separate_z,
+                use_adaptive_crop=use_adaptive_crop, 
+                crop_margin_ratio=crop_margin_ratio
             )
             
             shuffle = True if split == 'train' else False
