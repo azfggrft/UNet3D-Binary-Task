@@ -223,7 +223,7 @@ class MedicalImageDataset(Dataset):
             augmentation_type: 數據增強類型
             spacing: 原始資料的 spacing (z, y, x)，用於判斷各向異性
             force_separate_z: 強制是否分離 z 軸處理
-            use_adaptive_crop: 是否使用自適應裁剪（針對小標籤優化）
+            use_adaptive_crop: 是否使用自適應裁剪（僅在訓練集有效）
             crop_margin_ratio: 裁剪邊界擴展比例
         """
         self.data_root = Path(data_root)
@@ -237,8 +237,13 @@ class MedicalImageDataset(Dataset):
         self.use_adaptive_crop = use_adaptive_crop
         self.crop_margin_ratio = crop_margin_ratio
 
-        if self.use_adaptive_crop:
-            print(f"✅ 啟用智慧裁剪模式 (margin: {crop_margin_ratio*100:.0f}%)")
+        # 🔑 關鍵修改：僅在訓練集使用 adaptive crop
+        self.use_adaptive_crop = use_adaptive_crop and (split == 'train')
+        
+        if use_adaptive_crop and split == 'train':
+            print(f"✅ [TRAIN] 啟用智慧裁剪模式 (margin: {crop_margin_ratio*100:.0f}%)")
+        elif use_adaptive_crop and split != 'train':
+            print(f"⚠️ [{split.upper()}] 關閉智慧裁剪（保持完整影像範圍）")
         
         # 數據增強設定
         self.use_augmentation = use_augmentation and (split == 'train')
@@ -547,13 +552,13 @@ class MedicalImageDataset(Dataset):
             # 處理維度不匹配
             image, mask = self.handle_dimension_mismatch(image, mask, img_path.name)
             
-            # 🔑 關鍵修改：使用自適應裁剪和縮放
+            # 🔑 關鍵邏輯：根據 split 選擇處理方式
             if self.target_size is not None:
-                if hasattr(self, 'use_adaptive_crop') and self.use_adaptive_crop:
-                    # 使用智慧裁剪
+                if self.use_adaptive_crop:
+                    # 僅訓練集執行：先裁剪 ROI，再 resize
                     image, mask = self.adaptive_crop_and_resize(image, mask, self.target_size)
                 else:
-                    # 原始方法
+                    # 驗證/測試集：直接 resize 完整影像
                     image = self.resize_volume(image, self.target_size, is_seg=False)
                     mask = self.resize_volume(mask, self.target_size, is_seg=True)
             
