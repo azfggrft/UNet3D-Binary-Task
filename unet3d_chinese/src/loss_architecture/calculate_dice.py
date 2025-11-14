@@ -47,7 +47,7 @@ def calculate_dice_score(predictions, targets, num_classes, smooth=1e-6):
     else:
         dice = (2. * intersection + smooth) / (union + smooth)
     
-    return dice.item()
+    return float(dice)
 
 def calculate_metrics(predictions, targets, num_classes):
     """
