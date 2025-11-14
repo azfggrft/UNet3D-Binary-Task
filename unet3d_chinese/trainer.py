@@ -215,11 +215,11 @@ class EnhancedUNet3DTrainer:
             return f'{dice_score:.4f}'
     
     def train_one_epoch(self, epoch):
-        """訓練一個 epoch - 修復學習率顯示"""
+        """訓練一個 epoch - 修改為樣本級別平均"""
         self.epoch_start_time = time.time()
         self.model.train()
         train_loss = 0.0
-        train_dice_scores = []
+        train_dice_scores = []  # ✅ 改為存儲每個樣本的分數
         
         num_batches = len(self.data_loaders['train'])
         
@@ -265,32 +265,36 @@ class EnhancedUNet3DTrainer:
             
             train_loss += loss.item()
             
+            # ✅ 修改：計算每個樣本的 Dice 分數（與驗證和測試一致）
             with torch.no_grad():
-                dice_score = calculate_dice_score(
-                    outputs, masks, num_classes=self.model.n_classes
-                )
-                train_dice_scores.append(dice_score)
-            
-            # 更新進度條 - 顯示實際當前學習率
-            if self.use_progress_bar:
-                current_lr = self.optimizer.param_groups[0]['lr']  # 獲取實際的學習率
+                batch_size = images.size(0)
+                batch_dice_scores = []  # 當前批次的 Dice 分數
                 
-                # 獲取動量資訊
-                momentum_info = ""
-                if 'momentum' in self.optimizer.param_groups[0]:
-                    momentum = self.optimizer.param_groups[0]['momentum']
-                    momentum_info = f", M:{momentum:.2f}"
-                elif 'betas' in self.optimizer.param_groups[0]:
-                    beta1 = self.optimizer.param_groups[0]['betas'][0]
-                    momentum_info = f", β1:{beta1:.2f}"
+                for sample_idx in range(batch_size):
+                    single_output = outputs[sample_idx:sample_idx+1]
+                    single_mask = masks[sample_idx:sample_idx+1]
+                    
+                    # 使用 calculate_metrics 保持一致性
+                    single_metrics = calculate_metrics(
+                        single_output, single_mask, num_classes=self.model.n_classes
+                    )
+                    single_dice = single_metrics['mean_dice']
+                    train_dice_scores.append(single_dice)  # 添加到總列表
+                    batch_dice_scores.append(single_dice)   # 添加到批次列表
+                
+                # 計算當前批次的平均 Dice（用於進度條顯示）
+                current_batch_dice = np.mean(batch_dice_scores)
+            
+            # 更新進度條 - 顯示當前批次的平均 Dice
+            if self.use_progress_bar:
+                current_lr = self.optimizer.param_groups[0]['lr']
                 
                 postfix_data = {
                     'Loss': f'{loss.item():.4f}',
-                    'Dice': self._format_dice_score(dice_score),
-                    'LR': f'{current_lr:.2e}'  # 使用科學計數法節省空間
+                    'Dice': f'{current_batch_dice:.4f}',  # ✅ 使用當前批次平均
+                    'LR': f'{current_lr:.2e}'
                 }
                 
-                # 如果是 warmup 階段，添加階段標識
                 if is_warmup_stage:
                     postfix_data['Stage'] = f'W{epoch+1}/{warmup_epochs}'
                     
@@ -299,11 +303,10 @@ class EnhancedUNet3DTrainer:
             elif batch_idx % 5 == 0:
                 progress = 100.0 * batch_idx / num_batches
                 current_lr = self.optimizer.param_groups[0]['lr']
-                dice_str = self._format_dice_score(dice_score)
                 
                 stage_prefix = "[WARMUP]" if is_warmup_stage else "[TRAIN]"
                 print(f'\r  {stage_prefix} 批次 [{batch_idx:3d}/{num_batches}] {progress:5.1f}% | '
-                    f'損失: {loss.item():.4f} | Dice: {dice_str} | LR: {current_lr:.6f}', end='')
+                    f'損失: {loss.item():.4f} | Dice: {current_batch_dice:.4f} | LR: {current_lr:.6f}', end='')
         
         # 關閉訓練進度條
         if self.use_progress_bar and self.train_pbar:
@@ -311,14 +314,8 @@ class EnhancedUNet3DTrainer:
         
         avg_train_loss = train_loss / num_batches
         
-        # 計算平均 Dice 分數 - 處理列表格式
-        if train_dice_scores:
-            if isinstance(train_dice_scores[0], (list, tuple)):
-                avg_train_dice = np.mean([score[0] if len(score) > 0 else 0.0 for score in train_dice_scores])
-            else:
-                avg_train_dice = np.mean(train_dice_scores)
-        else:
-            avg_train_dice = 0.0
+        # ✅ 計算樣本級別平均 Dice（所有樣本的平均）
+        avg_train_dice = np.mean(train_dice_scores) if train_dice_scores else 0.0
         
         epoch_time = time.time() - self.epoch_start_time
         self.history['epoch_time'].append(epoch_time)
@@ -333,13 +330,13 @@ class EnhancedUNet3DTrainer:
         return avg_train_loss, avg_train_dice
     
     def validate_one_epoch(self, epoch):
-        """驗證一個 epoch"""
+        """驗證一個 epoch - 修改為樣本級別平均"""
         if 'val' not in self.data_loaders:
             return 0.0, 0.0
             
         self.model.eval()
         val_loss = 0.0
-        val_dice_scores = []
+        val_dice_scores = []  # ✅ 改為存儲每個樣本的分數
         
         num_batches = len(self.data_loaders['val'])
         
@@ -348,7 +345,7 @@ class EnhancedUNet3DTrainer:
             self.val_pbar = tqdm(
                 enumerate(self.data_loaders['val']), 
                 total=num_batches,
-                desc=f"Epoch {epoch+1:3d} 驗證",
+                desc=f"✨ Valid E{epoch+1:3d}",
                 leave=False,
                 ncols=100,
                 bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}] {postfix}'
@@ -369,21 +366,34 @@ class EnhancedUNet3DTrainer:
                 loss = self.criterion(outputs, masks)
                 val_loss += loss.item()
                 
-                dice_score = calculate_dice_score(
-                    outputs, masks, num_classes=self.model.n_classes
-                )
-                val_dice_scores.append(dice_score)
+                # ✅ 計算每個樣本的 Dice 分數（與訓練和測試一致）
+                batch_size = images.size(0)
+                batch_dice_scores = []  # 當前批次的 Dice 分數
                 
-                # 更新進度條 - 修復格式化問題
+                for sample_idx in range(batch_size):
+                    single_output = outputs[sample_idx:sample_idx+1]
+                    single_mask = masks[sample_idx:sample_idx+1]
+                    
+                    # 使用 calculate_metrics 保持一致性
+                    single_metrics = calculate_metrics(
+                        single_output, single_mask, num_classes=self.model.n_classes
+                    )
+                    single_dice = single_metrics['mean_dice']
+                    val_dice_scores.append(single_dice)      # 添加到總列表
+                    batch_dice_scores.append(single_dice)    # 添加到批次列表
+                
+                # 計算當前批次的平均 Dice（用於進度條顯示）
+                current_batch_dice = np.mean(batch_dice_scores)
+                
+                # 更新進度條
                 if self.use_progress_bar:
                     self.val_pbar.set_postfix({
                         'Loss': f'{loss.item():.4f}',
-                        'Dice': self._format_dice_score(dice_score)  # 使用安全的格式化函數
+                        'Dice': f'{current_batch_dice:.4f}'
                     })
                 elif batch_idx % 3 == 0:
                     progress = 100.0 * batch_idx / num_batches
-                    dice_str = self._format_dice_score(dice_score)  # 使用安全的格式化函數
-                    print(f'\r  驗證進度 {progress:5.1f}% | 當前Dice: {dice_str}', end='')
+                    print(f'\r  驗證進度 {progress:5.1f}% | 當前Dice: {current_batch_dice:.4f}', end='')
         
         # 關閉驗證進度條
         if self.use_progress_bar and self.val_pbar:
@@ -391,16 +401,8 @@ class EnhancedUNet3DTrainer:
         
         avg_val_loss = val_loss / num_batches
         
-        # 計算平均 Dice 分數 - 處理列表格式
-        if val_dice_scores:
-            if isinstance(val_dice_scores[0], (list, tuple)):
-                # 如果是列表格式，取每個批次的第一個元素（前景類別）
-                avg_val_dice = np.mean([score[0] if len(score) > 0 else 0.0 for score in val_dice_scores])
-            else:
-                # 如果是單一數值格式
-                avg_val_dice = np.mean(val_dice_scores)
-        else:
-            avg_val_dice = 0.0
+        # ✅ 計算樣本級別平均 Dice（所有樣本的平均）
+        avg_val_dice = np.mean(val_dice_scores) if val_dice_scores else 0.0
         
         if not self.use_progress_bar:
             print(f'\n  驗證完成 | 平均損失: {avg_val_loss:.4f} | 平均Dice: {avg_val_dice:.4f}')
