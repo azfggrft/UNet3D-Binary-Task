@@ -347,7 +347,10 @@ class MedicalImageDataset(Dataset):
                 raise ValueError(f"圖像維度過低: {img_data.ndim}D")
             elif img_data.ndim > 4:
                 raise ValueError(f"不支援的圖像維度: {img_data.ndim}D")
-            
+              
+            # ✅ 將 nibabel 預設的 (X, Y, Z) 轉置為 (Z, Y, X) 以匹配 spacing 定義
+            img_data = np.transpose(img_data, (2, 1, 0))
+                               
             return img_data
         except Exception as e:
             print(f"❌ 讀取檔案 {file_path} 時發生錯誤: {e}")
