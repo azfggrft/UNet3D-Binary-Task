@@ -498,9 +498,15 @@ class EnhancedUNet3DTrainer:
         if self.scheduler is not None:
             checkpoint['scheduler_state_dict'] = self.scheduler.state_dict()
         
-        # 保存檢查點
+        # 每個 epoch 都存 latest
         latest_path = self.save_dir / 'latest_checkpoint.pth'
         torch.save(checkpoint, latest_path)
+
+        # 每隔 save_interval 存一份帶編號的檢查點
+        if (epoch + 1) % self.save_interval == 0:
+            epoch_path = self.save_dir / f'epoch_{epoch+1}_checkpoint.pth'
+            torch.save(checkpoint, epoch_path)
+            print(f"定期檢查點已保存: {epoch_path}")
         
         
         if is_dice_best:
@@ -722,12 +728,7 @@ class EnhancedUNet3DTrainer:
                         print(log_msg)
 
                 # 保存檢查點
-                if (epoch + 1) % self.save_interval == 0 or is_dice_best:
-                    self.save_checkpoint(epoch, is_dice_best=is_dice_best)
-
-                # 保存檢查點
-                if (epoch + 1) % self.save_interval == 0 or is_loss_best:
-                    self.save_checkpoint(epoch, is_loss_best=is_loss_best)
+                self.save_checkpoint(epoch, is_dice_best=is_dice_best, is_loss_best=is_loss_best)
                 
                 # 視覺化 - 包含預測結果
                 if self.visualize and (epoch + 1) % self.plot_interval == 0:
