@@ -41,13 +41,11 @@ def calculate_dice_score(predictions, targets, num_classes, smooth=1e-6):
     intersection = (pred_mask * target_mask).sum()
     union = pred_mask.sum() + target_mask.sum()
     
-    # 計算 Dice 分數
-    if union == 0:
-        dice = 1.0 if intersection == 0 else 0.0
-    else:
-        dice = (2. * intersection + smooth) / (union + smooth)
+    # ==================== 替換原本的 if-else 區塊 ====================
+    # 直接利用 smooth 平滑項處理分母為 0 的情況，並保持運算都在 PyTorch 張量中進行
+    dice = (2. * intersection + smooth) / (union + smooth)
     
-    return float(dice)
+    return dice.item() 
 
 def calculate_metrics(predictions, targets, num_classes):
     """
