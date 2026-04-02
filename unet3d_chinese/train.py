@@ -454,7 +454,7 @@ def create_lr_scheduler(optimizer, config, warmup_scheduler=None):
         
     elif config['scheduler'] == 'cosine':
         from torch.optim.lr_scheduler import CosineAnnealingLR
-        t_max = config.get('cosine_t_max', config['num_epochs'])
+        t_max = config.get('cosine_t_max') or config['num_epochs']
         scheduler = CosineAnnealingLR(
             optimizer,
             T_max=t_max,
