@@ -194,6 +194,8 @@ class UNet3DPredictor:
                 
             print(f"📊 最終影像形狀: {img_data.shape}")
             print(f"📏 檔案 spacing: {spacing} (z, y, x)")
+
+            img_data = np.transpose(img_data, (2, 1, 0))  # ← 新增這行
             
             return img_data, spacing
             
