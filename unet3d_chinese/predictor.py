@@ -353,6 +353,9 @@ class UNet3DPredictor:
         
         # 後處理（使用 nnUNet 風格）
         prediction_mask = self.postprocess_prediction(prediction, original_size, current_spacing)
+
+        # ← 新增：反轉置回 nibabel 的 (X, Y, Z) 順序，才能正確存回 NII
+        prediction_mask = np.transpose(prediction_mask, (2, 1, 0))
         
         # 計算統計資訊
         stats = {
