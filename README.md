@@ -1,4 +1,4 @@
-# UNet3D-Binary-Task(Python 3.10)
+# UNet3D(Python 3.10)
 This is a UNet3D model designed for medical image segmentation.
 
 Note: Most of this was AI-assisted, but I have manually debugged everything, so it is safe to use.
