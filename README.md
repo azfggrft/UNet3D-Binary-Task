@@ -13,6 +13,9 @@ It is available in both Traditional Chinese and English versions, with detailed 
 4. Early stopping mechanism (step, reduce_on_plateau, cosine).
 5. Added the ability to perform data augmentation directly on the training set.
 
+Added unet3d_chinese_multiple, which supports multi-class segmentation!!!
+unet3d_chinese is the legacy version and only supports a single label.
+
 -------------------------------------------------------------------------------------------------------
 
 這是一個專為醫學影像分割設計的 UNet3D 模型。
@@ -28,6 +31,9 @@ It is available in both Traditional Chinese and English versions, with detailed 
 3. 新增視覺化功能。
 4. 早停機制（step、reduce_on_plateau、cosine）。
 5. 新增可直接在訓練集上進行資料增強的功能。
+
+新增 unet3d_chinese_multiple 可以支援多類別!!! 
+unet3d_chinese 屬於舊版，只能支援單一標籤。
 
 -------------------------------------------------------------------------------------------------------
 
