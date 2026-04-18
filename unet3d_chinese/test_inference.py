@@ -200,6 +200,8 @@ class ModelInference:
             img_data = img_data[:, :, :, 0]
         elif img_data.ndim < 3:
             raise ValueError(f"圖像維度過低: {img_data.ndim}D")
+            
+        img_data = np.transpose(img_data, (2, 1, 0))  # ← 新增這行
         
         return img_data
     
