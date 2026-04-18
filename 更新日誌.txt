@@ -95,3 +95,4 @@ dataload.py中，將nibabel 預設的 (X, Y, Z) 轉置為 (Z, Y, X) 以匹配 sp
 ###############################################################################################
 
 debug: predictor.py 和 test_inference.py 忘記添加 img_data = np.transpose(img_data, (2, 1, 0))，導致無法貼齊的問題
+新增 unet3d_chinese_multiple 可以支援多類別!!! unet3d_chinese 屬於舊版，只能支援單一標籤。
